@@ -5,9 +5,9 @@ const mustache = @import("mustache");
 pub fn main() anyerror!void {
     std.debug.print("Benchmark\n{s}\n", .{"https://github.com/batiati/mustache_benchmark"});
     std.debug.print("=============================\n\n", .{});
-    try runTemplate("Template 1", Binding1, "../data/template1.html", "../data/bindings1.json");
-    try runTemplate("Template 2", Binding2, "../data/template2.html", "../data/bindings2.json");
-    try runTemplate("Template 3", Binding3, "../data/template3.html", "../data/bindings3.json");
+    try runTemplate("Template 1", Binding1, "data/template1.html", "data/bindings1.json");
+    try runTemplate("Template 2", Binding2, "data/template2.html", "data/bindings2.json");
+    try runTemplate("Template 3", Binding3, "data/template3.html", "data/bindings3.json");
 }
 
 const TIMES = 1_000_000;
@@ -17,13 +17,6 @@ const Binding1 = struct {
     txt1: []const u8,
     txt2: []const u8,
     txt3: []const u8,
-
-    pub fn free(self: *Binding1, allocator: Allocator) void {
-        allocator.free(self.title);
-        allocator.free(self.txt1);
-        allocator.free(self.txt2);
-        allocator.free(self.txt3);
-    }
 };
 
 const Binding2 = struct {
@@ -33,14 +26,6 @@ const Binding2 = struct {
     short_description: []const u8,
     detail_description: []const u8,
     offer_id: u32,
-
-    pub fn free(self: *Binding2, allocator: Allocator) void {
-        allocator.free(self.title);
-        allocator.free(self.image_url);
-        allocator.free(self.icon_url);
-        allocator.free(self.short_description);
-        allocator.free(self.detail_description);
-    }
 };
 
 const Binding3 = struct {
@@ -52,21 +37,6 @@ const Binding3 = struct {
     person: bool,
     repo: []const Repo,
     repo2: []const Repo,
-
-    pub fn free(self: *Binding3, allocator: Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.company);
-        for (self.repo) |item| {
-            allocator.free(item.name);
-        }
-
-        for (self.repo2) |item| {
-            allocator.free(item.name);
-        }
-
-        allocator.free(self.repo);
-        allocator.free(self.repo2);
-    }
 };
 
 fn runTemplate(comptime caption: []const u8, comptime TBinding: type, comptime template: []const u8, comptime json: []const u8) !void {
@@ -77,19 +47,19 @@ fn runTemplate(comptime caption: []const u8, comptime TBinding: type, comptime t
     var cached_template = parseTemplate(allocator, template_text);
     defer cached_template.deinit(allocator);
 
-    try runTemplatePreParsed(allocator, caption ++ " - pre-parsed", TBinding, json, cached_template);
-    try runTemplateNotParsed(allocator, caption ++ " - not parsed", TBinding, json, template_text);
+    try runTemplatePreParsed(allocator, caption ++ " - pre-parsed", TBinding, @embedFile(json), cached_template);
+    try runTemplateNotParsed(allocator, caption ++ " - not parsed", TBinding, @embedFile(json), template_text);
 }
 
 fn runTemplatePreParsed(allocator: Allocator, comptime caption: []const u8, comptime TBinding: type, comptime json: []const u8, template: mustache.Template) !void {
-    var data = try loadData(TBinding, allocator, json);
-    defer data.free(allocator);
+    var data = try std.json.parseFromSlice(TBinding, allocator, json, .{});
+    defer data.deinit();
 
     var total_bytes: usize = 0;
     var repeat: u32 = 0;
     const start = std.time.nanoTimestamp();
     while (repeat < TIMES) : (repeat += 1) {
-        const result = try mustache.allocRender(allocator, template, &data);
+        const result = try mustache.allocRender(allocator, template, &data.value);
         total_bytes += result.len;
         allocator.free(result);
     }
@@ -100,14 +70,14 @@ fn runTemplatePreParsed(allocator: Allocator, comptime caption: []const u8, comp
 }
 
 fn runTemplateNotParsed(allocator: Allocator, comptime caption: []const u8, comptime TBinding: type, comptime json: []const u8, comptime template_text: []const u8) !void {
-    var data = try loadData(TBinding, allocator, json);
-    defer data.free(allocator);
+    var data = try std.json.parseFromSlice(TBinding, allocator, json, .{});
+    defer data.deinit();
 
     var total_bytes: usize = 0;
     var repeat: u32 = 0;
     const start = std.time.nanoTimestamp();
     while (repeat < TIMES) : (repeat += 1) {
-        const result = try mustache.allocRenderText(allocator, template_text, &data);
+        const result = try mustache.allocRenderText(allocator, template_text, &data.value);
         total_bytes += result.len;
         allocator.free(result);
     }
@@ -127,15 +97,10 @@ fn printSummary(caption: []const u8, ellapsed: i128, total_bytes: usize) void {
 
 fn parseTemplate(allocator: Allocator, template_text: []const u8) mustache.Template {
     return switch (mustache.parseText(allocator, template_text, .{}, .{ .copy_strings = false }) catch unreachable) {
-        .ParseError => |detail| {
+        .parse_error => |detail| {
             std.log.err("Parse error {s} at lin {}, col {}", .{ @errorName(detail.parse_error), detail.lin, detail.col });
             @panic("parser error");
         },
-        .Success => |ret| ret,
+        .success => |ret| ret,
     };
-}
-
-fn loadData(comptime T: type, allocator: Allocator, comptime json: []const u8) !T {
-    var token_stream = std.json.TokenStream.init(@embedFile(json));
-    return try std.json.parse(T, &token_stream, .{ .allocator = allocator });
 }

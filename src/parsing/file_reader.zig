@@ -12,17 +12,17 @@ const ref_counter = @import("ref_counter.zig");
 
 const File = std.fs.File;
 
-pub fn FileReader(comptime options: TemplateOptions) type {
+pub fn FileReaderType(comptime options: TemplateOptions) type {
     const read_buffer_size = switch (options.source) {
         .file => |file| file.read_buffer_size,
         .string => return void,
     };
 
-    const RefCounter = ref_counter.RefCounter(options);
-    const RefCountedSlice = ref_counter.RefCountedSlice(options);
+    const RefCounter = ref_counter.RefCounterType(options);
+    const RefCountedSlice = ref_counter.RefCountedSliceType(options);
 
     return struct {
-        const Self = @This();
+        const FileReader = @This();
 
         pub const OpenError = std.fs.File.OpenError;
         pub const Error = Allocator.Error || std.fs.File.ReadError;
@@ -30,19 +30,19 @@ pub fn FileReader(comptime options: TemplateOptions) type {
         file: File,
         eof: bool = false,
 
-        pub fn init(absolute_path: []const u8) OpenError!Self {
+        pub fn init(absolute_path: []const u8) OpenError!FileReader {
             const file = try std.fs.openFileAbsolute(absolute_path, .{});
-            return Self{
+            return FileReader{
                 .file = file,
             };
         }
 
-        pub fn read(self: *Self, allocator: Allocator, prepend: []const u8) Error!RefCountedSlice {
+        pub fn read(self: *FileReader, allocator: Allocator, prepend: []const u8) Error!RefCountedSlice {
             var buffer = try allocator.alloc(u8, read_buffer_size + prepend.len);
             errdefer allocator.free(buffer);
 
             if (prepend.len > 0) {
-                std.mem.copy(u8, buffer, prepend);
+                std.mem.copyForwards(u8, buffer, prepend);
             }
 
             const size = try self.file.read(buffer[prepend.len..]);
@@ -63,7 +63,7 @@ pub fn FileReader(comptime options: TemplateOptions) type {
             };
         }
 
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *FileReader) void {
             self.file.close();
         }
     };
@@ -77,7 +77,7 @@ test "FileReader.Slices" {
     // So we can parse many tokens on a single read, and read a new slice containing only the last unparsed bytes
     //
     // Just 5 chars in our test
-    const SlicedReader = FileReader(.{ .source = .{ .file = .{ .read_buffer_size = 5 } }, .output = .cache });
+    const SlicedReader = FileReaderType(.{ .source = .{ .file = .{ .read_buffer_size = 5 } }, .output = .cache });
 
     //
     //                           Block index

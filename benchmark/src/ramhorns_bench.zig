@@ -61,15 +61,15 @@ pub fn simpleTemplate(allocator: Allocator, buffer: []u8, comptime mode: Mode, w
     const fmt_template = "<title>{[title]s}</title><h1>{[title]s}</h1><div>{[body]s}</div>";
 
     const Data = struct { title: []const u8, body: []const u8 };
-    var data: Data = .{
+    const data: Data = .{
         .title = "Hello, Mustache!",
         .body = "This is a really simple test of the rendering!",
     };
 
-    var json_text = try std.json.stringifyAlloc(allocator, data, .{});
+    const json_text = try std.json.stringifyAlloc(allocator, data, .{});
     defer allocator.free(json_text);
 
-    var json_data = try std.json.parseFromSlice(std.json.Value, json_text, .{});
+    var json_data = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
     defer json_data.deinit();
 
     var template = (try mustache.parseText(allocator, template_text, .{}, .{ .copy_strings = false, .features = features })).success;
@@ -114,7 +114,7 @@ pub fn simpleTemplate(allocator: Allocator, buffer: []u8, comptime mode: Mode, w
         reference,
     );
 
-    if (mode != .Buffer) _ = try repeat(
+    if (false and mode != .Buffer) _ = try repeat(
         "Mustache not parsed",
         notParsed,
         .{
@@ -136,7 +136,7 @@ pub fn simpleTemplate(allocator: Allocator, buffer: []u8, comptime mode: Mode, w
             buffer,
             mode,
             template_text,
-            data,
+            json_data.value,
             writer,
         },
         reference,
@@ -162,13 +162,28 @@ pub fn partialTemplates(allocator: Allocator, buffer: []u8, comptime mode: Mode,
 
     const footer_partial_text = "<footer>Sup?</footer>";
 
-    var template = (try mustache.parseText(allocator, template_text, .{}, .{ .copy_strings = false, .features = features })).success;
+    var template = (try mustache.parseText(
+        allocator,
+        template_text,
+        .{},
+        .{ .copy_strings = false, .features = features },
+    )).success;
     defer template.deinit(allocator);
 
-    var head_template = (try mustache.parseText(allocator, head_partial_text, .{}, .{ .copy_strings = false, .features = features })).success;
+    var head_template = (try mustache.parseText(
+        allocator,
+        head_partial_text,
+        .{},
+        .{ .copy_strings = false, .features = features },
+    )).success;
     defer head_template.deinit(allocator);
 
-    var footer_template = (try mustache.parseText(allocator, footer_partial_text, .{}, .{ .copy_strings = false, .features = features })).success;
+    var footer_template = (try mustache.parseText(
+        allocator,
+        footer_partial_text,
+        .{},
+        .{ .copy_strings = false, .features = features },
+    )).success;
     defer footer_template.deinit(allocator);
 
     var partial_templates = std.StringHashMap(mustache.Template).init(allocator);
@@ -183,12 +198,12 @@ pub fn partialTemplates(allocator: Allocator, buffer: []u8, comptime mode: Mode,
     };
 
     const Data = struct { title: []const u8, body: []const u8 };
-    var data: Data = .{
+    const data: Data = .{
         .title = "Hello, Mustache!",
         .body = "This is a really simple test of the rendering!",
     };
 
-    var json_text = try std.json.stringifyAlloc(allocator, data, .{});
+    const json_text = try std.json.stringifyAlloc(allocator, data, .{});
     defer allocator.free(json_text);
 
     var json_data = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
@@ -285,17 +300,39 @@ fn printSummary(caption: []const u8, ellapsed: i128, total_bytes: usize, referen
     std.debug.print("Total time {d:.3}s\n", .{@as(f64, @floatFromInt(ellapsed)) / std.time.ns_per_s});
 
     if (reference) |reference_time| {
-        const perf = if (reference_time > 0) @as(f64, @floatFromInt(ellapsed)) / @as(f64, @floatFromInt(reference_time)) else 0;
+        const perf = if (reference_time > 0)
+            @as(f64, @floatFromInt(ellapsed)) / @as(f64, @floatFromInt(reference_time))
+        else
+            0;
         std.debug.print("Comparation {d:.3}x {s}\n", .{ perf, (if (perf > 0) "slower" else "faster") });
     }
 
-    std.debug.print("{d:.0} ops/s\n", .{TIMES / (@as(f64, @floatFromInt(ellapsed)) / std.time.ns_per_s)});
-    std.debug.print("{d:.0} ns/iter\n", .{@as(f64, @floatFromInt(ellapsed)) / TIMES});
-    std.debug.print("{d:.0} MB/s\n", .{(@as(f64, @floatFromInt(total_bytes)) / 1024 / 1024) / (@as(f64, @floatFromInt(ellapsed)) / std.time.ns_per_s)});
+    std.debug.print(
+        "{d:.0} ops/s\n",
+        .{TIMES / (@as(f64, @floatFromInt(ellapsed)) / std.time.ns_per_s)},
+    );
+    std.debug.print(
+        "{d:.0} ns/iter\n",
+        .{@as(f64, @floatFromInt(ellapsed)) / TIMES},
+    );
+    std.debug.print(
+        "{d:.0} MB/s\n",
+        .{
+            (@as(f64, @floatFromInt(total_bytes)) / 1024 / 1024) /
+                (@as(f64, @floatFromInt(ellapsed)) / std.time.ns_per_s),
+        },
+    );
     std.debug.print("\n", .{});
 }
 
-fn zigFmt(allocator: Allocator, buffer: []u8, mode: Mode, comptime fmt_template: []const u8, data: anytype, writer: anytype) !usize {
+fn zigFmt(
+    allocator: Allocator,
+    buffer: []u8,
+    mode: Mode,
+    comptime fmt_template: []const u8,
+    data: anytype,
+    writer: anytype,
+) !usize {
     switch (mode) {
         .Buffer => {
             const ret = try std.fmt.bufPrint(buffer, fmt_template, data);
@@ -314,7 +351,14 @@ fn zigFmt(allocator: Allocator, buffer: []u8, mode: Mode, comptime fmt_template:
     }
 }
 
-fn preParsed(allocator: Allocator, buffer: []u8, mode: Mode, template: mustache.Template, data: anytype, writer: anytype) !usize {
+fn preParsed(
+    allocator: Allocator,
+    buffer: []u8,
+    mode: Mode,
+    template: mustache.Template,
+    data: anytype,
+    writer: anytype,
+) !usize {
     switch (mode) {
         .Buffer => {
             const ret = try mustache.bufRender(buffer, template, data);
@@ -333,10 +377,18 @@ fn preParsed(allocator: Allocator, buffer: []u8, mode: Mode, template: mustache.
     }
 }
 
-fn preParsedPartials(allocator: Allocator, buffer: []u8, mode: Mode, template: mustache.Template, partial_templates: anytype, data: anytype, writer: anytype) !usize {
+fn preParsedPartials(
+    allocator: Allocator,
+    buffer: []u8,
+    mode: Mode,
+    template: mustache.Template,
+    partial_templates: anytype,
+    data: anytype,
+    writer: anytype,
+) !usize {
     switch (mode) {
         .Buffer => {
-            var ret = try mustache.bufRenderPartials(buffer, template, partial_templates, data);
+            const ret = try mustache.bufRenderPartials(buffer, template, partial_templates, data);
             return ret.len;
         },
         .Writer => {
@@ -352,7 +404,14 @@ fn preParsedPartials(allocator: Allocator, buffer: []u8, mode: Mode, template: m
     }
 }
 
-fn notParsed(allocator: Allocator, buffer: []u8, mode: Mode, template_text: []const u8, data: anytype, writer: anytype) !usize {
+fn notParsed(
+    allocator: Allocator,
+    buffer: []u8,
+    mode: Mode,
+    template_text: []const u8,
+    data: anytype,
+    writer: anytype,
+) !usize {
     switch (mode) {
         .Buffer => {
             _ = buffer;
@@ -360,18 +419,39 @@ fn notParsed(allocator: Allocator, buffer: []u8, mode: Mode, template_text: []co
         },
         .Writer => {
             var counter = std.io.countingWriter(writer);
-            try mustache.renderTextPartialsWithOptions(allocator, template_text, {}, data, counter.writer(), .{ .features = features });
+            try mustache.renderTextPartialsWithOptions(
+                allocator,
+                template_text,
+                {},
+                data,
+                counter.writer(),
+                .{ .features = features },
+            );
             return counter.bytes_written;
         },
         .Alloc => {
-            const ret = try mustache.allocRenderTextPartialsWithOptions(allocator, template_text, {}, data, .{ .features = features });
+            const ret = try mustache.allocRenderTextPartialsWithOptions(
+                allocator,
+                template_text,
+                {},
+                data,
+                .{ .features = features },
+            );
             defer allocator.free(ret);
             return ret.len;
         },
     }
 }
 
-fn notParsedPartials(allocator: Allocator, buffer: []u8, mode: Mode, template_text: []const u8, partial_templates: anytype, data: anytype, writer: anytype) !usize {
+fn notParsedPartials(
+    allocator: Allocator,
+    buffer: []u8,
+    mode: Mode,
+    template_text: []const u8,
+    partial_templates: anytype,
+    data: anytype,
+    writer: anytype,
+) !usize {
     switch (mode) {
         .Buffer => {
             _ = buffer;

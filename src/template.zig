@@ -207,28 +207,27 @@ pub const Element = union(enum) {
     pub fn deinit(self: Element, allocator: Allocator, owns_string: bool) void {
         switch (self) {
             .static_text => |content| if (owns_string) allocator.free(content),
-            .interpolation => |path| destroyPath(allocator, owns_string, path),
-            .unescaped_interpolation => |path| destroyPath(allocator, owns_string, path),
+            inline .interpolation, .unescaped_interpolation => |path| destroyPath(
+                allocator,
+                owns_string,
+                path,
+            ),
             .section => |section| {
                 destroyPath(allocator, owns_string, section.path);
                 if (owns_string) {
                     if (section.inner_text) |inner_text| allocator.free(inner_text);
                 }
             },
-            .inverted_section => |section| {
-                destroyPath(allocator, owns_string, section.path);
-            },
+            .inverted_section => |section| destroyPath(allocator, owns_string, section.path),
             .partial => |partial| {
                 if (owns_string) {
                     allocator.free(partial.key);
                     if (partial.indentation) |indentation| allocator.free(indentation);
                 }
             },
-
             .parent => |parent| {
                 if (owns_string) allocator.free(parent.key);
             },
-
             .block => |block| {
                 if (owns_string) allocator.free(block.key);
             },
@@ -360,7 +359,7 @@ fn parseSource(
         .load_mode = load_mode,
     };
 
-    var template = TemplateLoader(options){
+    var template = TemplateLoaderType(options){
         .allocator = allocator,
         .delimiters = delimiters,
     };
@@ -369,17 +368,24 @@ fn parseSource(
     try template.load(source_content);
 
     switch (template.result) {
-        .elements => |elements| return ParseResult{ .success = .{ .elements = elements, .options = &options } },
-        .parser_error => |last_error| return ParseResult{ .parse_error = last_error },
+        .elements => |elements| return ParseResult{
+            .success = .{
+                .elements = elements,
+                .options = &options,
+            },
+        },
+        .parser_error => |last_error| return ParseResult{
+            .parse_error = last_error,
+        },
         .not_loaded => unreachable,
     }
 }
 
-pub fn TemplateLoader(comptime options: TemplateOptions) type {
+pub fn TemplateLoaderType(comptime options: TemplateOptions) type {
     return struct {
-        const Self = @This();
+        const TemplateLoader = @This();
 
-        const Parser = parsing.Parser(options);
+        const Parser = parsing.ParserType(options);
         const Node = Parser.Node;
 
         const Collector = struct {
@@ -387,7 +393,7 @@ pub fn TemplateLoader(comptime options: TemplateOptions) type {
 
             elements: []Element = &.{},
 
-            pub inline fn render(ctx: *@This(), elements: []Element) Error!void {
+            pub inline fn render(ctx: *Collector, elements: []Element) Error!void {
                 ctx.elements = elements;
             }
         };
@@ -400,7 +406,7 @@ pub fn TemplateLoader(comptime options: TemplateOptions) type {
             parser_error: ParseErrorDetail,
         } = .not_loaded,
 
-        pub fn load(self: *Self, template: []const u8) Parser.LoadError!void {
+        pub fn load(self: *TemplateLoader, template: []const u8) Parser.LoadError!void {
             var parser = try Parser.init(self.allocator, template, self.delimiters);
             defer parser.deinit();
 
@@ -414,14 +420,18 @@ pub fn TemplateLoader(comptime options: TemplateOptions) type {
             };
         }
 
-        pub fn collectElements(self: *Self, template_text: []const u8, render: anytype) ErrorSet(Parser, @TypeOf(render))!void {
+        pub fn collectElements(
+            self: *TemplateLoader,
+            template_text: []const u8,
+            render: anytype,
+        ) ErrorSet(Parser, @TypeOf(render))!void {
             var parser = try Parser.init(self.allocator, template_text, self.delimiters);
             defer parser.deinit();
 
             _ = try parser.parse(render);
         }
 
-        pub fn deinit(self: *Self) void {
+        pub fn deinit(self: *TemplateLoader) void {
             if (options.load_mode == .runtime_loaded) {
                 switch (self.result) {
                     .elements => |elements| {
@@ -454,7 +464,7 @@ pub fn TemplateLoader(comptime options: TemplateOptions) type {
     };
 }
 
-const comptime_tests_enabled = false; // @import("build_comptime_tests").comptime_tests_enabled;
+const comptime_tests_enabled = @import("build_comptime_tests").comptime_tests_enabled;
 test {
     _ = tests;
     _ = parsing;
@@ -473,20 +483,20 @@ const tests = struct {
         _ = api;
     }
 
-    fn TesterTemplateLoader(comptime load_mode: TemplateLoadMode) type {
+    fn TesterTemplateLoaderType(comptime load_mode: TemplateLoadMode) type {
         const options = TemplateOptions{
             .source = .{ .string = .{ .copy_strings = false } },
             .output = .cache,
             .load_mode = load_mode,
         };
 
-        return TemplateLoader(options);
+        return TemplateLoaderType(options);
     }
 
-    pub fn getTemplate(template_text: []const u8, comptime load_mode: TemplateLoadMode) !TesterTemplateLoader(load_mode) {
+    pub fn getTemplate(template_text: []const u8, comptime load_mode: TemplateLoadMode) !TesterTemplateLoaderType(load_mode) {
         const allocator = testing.allocator;
 
-        var template_loader = TesterTemplateLoader(load_mode){
+        var template_loader = TesterTemplateLoaderType(load_mode){
             .allocator = allocator,
         };
         errdefer template_loader.deinit();
@@ -507,7 +517,7 @@ const tests = struct {
     }
 
     pub fn expectPath(expected: []const u8, path: Element.Path) !void {
-        const TestParser = TesterTemplateLoader(.runtime_loaded).Parser;
+        const TestParser = TesterTemplateLoaderType(.runtime_loaded).Parser;
         var parser = try TestParser.init(testing.allocator, "", .{});
         defer parser.deinit();
 
@@ -536,10 +546,10 @@ const tests = struct {
 
                     try testing.expectEqual(@as(usize, 2), elements.len);
 
-                    try testing.expectEqual(Element.Type.static_text, elements[0]);
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
                     try testing.expectEqualStrings("12345", elements[0].static_text);
 
-                    try testing.expectEqual(Element.Type.static_text, elements[1]);
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
                     try testing.expectEqualStrings("67890", elements[1].static_text);
                 }
             }.action;
@@ -575,10 +585,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("12345", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("67890", elements[1].static_text);
         }
 
@@ -598,10 +608,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -621,10 +631,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -640,10 +650,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|\r\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
 
             try testing.expectEqualStrings("|", elements[1].static_text);
         }
@@ -660,7 +670,7 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 1), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("!\n", elements[0].static_text);
         }
 
@@ -682,10 +692,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -707,10 +717,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -726,10 +736,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  12 ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("\n", elements[1].static_text);
         }
 
@@ -745,10 +755,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("12345 ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings(" 67890", elements[1].static_text);
         }
     };
@@ -767,13 +777,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("(", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("text", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(")", elements[2].static_text);
         }
 
@@ -789,13 +799,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("(", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("text", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(")", elements[2].static_text);
         }
 
@@ -823,38 +833,38 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 10), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("[\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("section", elements[1].section.path);
             try testing.expectEqual(@as(usize, 3), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("  ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[3]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[3]));
             try expectPath("data", elements[3].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings("\n  |data|\n", elements[4].static_text);
 
             // Delimiters changed
 
-            try testing.expectEqual(Element.Type.section, elements[5]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[5]));
             try expectPath("section", elements[5].section.path);
             try testing.expectEqual(@as(usize, 3), elements[5].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("  {{data}}\n  ", elements[6].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[7]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[7]));
             try expectPath("data", elements[7].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[8]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[8]));
             try testing.expectEqualStrings("\n", elements[8].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[9]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[9]));
             try testing.expectEqualStrings("]", elements[9].static_text);
         }
 
@@ -882,38 +892,38 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 10), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("[\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("section", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 3), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("  ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[3]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[3]));
             try expectPath("data", elements[3].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings("\n  |data|\n", elements[4].static_text);
 
             // Delimiters changed
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[5]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[5]));
             try expectPath("section", elements[5].inverted_section.path);
             try testing.expectEqual(@as(usize, 3), elements[5].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("  {{data}}\n  ", elements[6].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[7]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[7]));
             try expectPath("data", elements[7].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[8]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[8]));
             try testing.expectEqualStrings("\n", elements[8].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[9]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[9]));
             try testing.expectEqualStrings("]", elements[9].static_text);
         }
 
@@ -929,10 +939,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings(" |", elements[1].static_text);
         }
 
@@ -948,10 +958,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" | ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("\n", elements[1].static_text);
         }
 
@@ -971,10 +981,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -994,10 +1004,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Begin.\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("End.", elements[1].static_text);
         }
 
@@ -1013,10 +1023,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|\r\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("|", elements[1].static_text);
         }
 
@@ -1032,7 +1042,7 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 1), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("=", elements[0].static_text);
         }
 
@@ -1048,7 +1058,7 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 1), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("=\n", elements[0].static_text);
         }
 
@@ -1064,10 +1074,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("|", elements[1].static_text);
         }
     };
@@ -1085,7 +1095,7 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 1), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Hello from {Mustache}!", elements[0].static_text);
         }
 
@@ -1100,13 +1110,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("Hello, ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("subject", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("!", elements[2].static_text);
         }
 
@@ -1121,10 +1131,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("These characters should be HTML escaped: ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("forbidden", elements[1].interpolation);
         }
 
@@ -1139,10 +1149,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("These characters should not be HTML escaped: ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("forbidden", elements[1].unescaped_interpolation);
         }
 
@@ -1157,10 +1167,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("These characters should not be HTML escaped: ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("forbidden", elements[1].unescaped_interpolation);
         }
 
@@ -1175,13 +1185,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" |", elements[2].static_text);
         }
 
@@ -1196,13 +1206,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" |", elements[2].static_text);
         }
 
@@ -1217,13 +1227,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" |", elements[2].static_text);
         }
 
@@ -1238,13 +1248,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n", elements[2].static_text);
         }
 
@@ -1259,13 +1269,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n", elements[2].static_text);
         }
 
@@ -1280,13 +1290,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n", elements[2].static_text);
         }
 
@@ -1301,13 +1311,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
 
@@ -1322,13 +1332,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
 
@@ -1343,13 +1353,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[1]));
             try expectPath("string", elements[1].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
     };
@@ -1367,17 +1377,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" | ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\t|\t", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings(" | \n", elements[3].static_text);
         }
 
@@ -1392,20 +1402,20 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 5), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" | ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 2), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("\n ", elements[3].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings(" | \n", elements[4].static_text);
         }
 
@@ -1420,27 +1430,27 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 7), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("YES", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("\n ", elements[3].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[4]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[4]));
             try expectPath("boolean", elements[4].section.path);
             try testing.expectEqual(@as(usize, 1), elements[4].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[5]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[5]));
             try testing.expectEqualStrings("GOOD", elements[5].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("\n", elements[6].static_text);
         }
 
@@ -1461,17 +1471,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| This Is\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|\n", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("| A Line", elements[3].static_text);
         }
 
@@ -1486,14 +1496,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|\r\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 0), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
 
@@ -1508,14 +1518,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.section, elements[0]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[0]));
             try expectPath("boolean", elements[0].section.path);
             try testing.expectEqual(@as(usize, 1), elements[0].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("#", elements[1].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n/", elements[2].static_text);
         }
 
@@ -1530,14 +1540,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("#", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n/\n", elements[2].static_text);
         }
 
@@ -1558,17 +1568,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| This Is\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|\n", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("| A Line", elements[3].static_text);
         }
 
@@ -1583,17 +1593,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("=", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("|", elements[3].static_text);
         }
 
@@ -1629,37 +1639,37 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 77), elements.len);
 
-            try testing.expectEqual(Element.Type.section, elements[0]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[0]));
             try expectPath("a", elements[0].section.path);
 
             {
                 try testing.expectEqual(@as(usize, 76), elements[0].section.children_count);
 
-                try testing.expectEqual(Element.Type.interpolation, elements[1]);
+                try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
                 try expectPath("one", elements[1].interpolation);
 
-                try testing.expectEqual(Element.Type.static_text, elements[2]);
+                try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
                 try testing.expectEqualStrings("\n", elements[2].static_text);
 
-                try testing.expectEqual(Element.Type.section, elements[3]);
+                try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[3]));
                 try expectPath("b", elements[3].section.path);
 
                 {
                     try testing.expectEqual(@as(usize, 71), elements[3].section.children_count);
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[4]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[4]));
                     try expectPath("one", elements[4].interpolation);
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[5]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[5]));
                     try expectPath("two", elements[5].interpolation);
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[6]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[6]));
                     try expectPath("one", elements[6].interpolation);
 
-                    try testing.expectEqual(Element.Type.static_text, elements[7]);
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[7]));
                     try testing.expectEqualStrings("\n", elements[7].static_text);
 
-                    try testing.expectEqual(Element.Type.section, elements[8]);
+                    try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[8]));
                     try expectPath("c", elements[8].section.path);
 
                     {
@@ -1667,23 +1677,23 @@ const tests = struct {
                         // Too lazy to do the rest ... 🙃
                     }
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[71]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[71]));
                     try expectPath("one", elements[71].interpolation);
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[72]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[72]));
                     try expectPath("two", elements[72].interpolation);
 
-                    try testing.expectEqual(Element.Type.interpolation, elements[73]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[73]));
                     try expectPath("one", elements[73].interpolation);
 
-                    try testing.expectEqual(Element.Type.static_text, elements[74]);
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[74]));
                     try testing.expectEqualStrings("\n", elements[74].static_text);
                 }
 
-                try testing.expectEqual(Element.Type.interpolation, elements[75]);
+                try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[75]));
                 try expectPath("one", elements[75].interpolation);
 
-                try testing.expectEqual(Element.Type.static_text, elements[76]);
+                try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[76]));
                 try testing.expectEqualStrings("\n", elements[76].static_text);
             }
         }
@@ -1702,17 +1712,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" | ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\t|\t", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings(" | \n", elements[3].static_text);
         }
 
@@ -1727,20 +1737,20 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 5), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" | ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 2), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("\n ", elements[3].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings(" | \n", elements[4].static_text);
         }
 
@@ -1755,27 +1765,27 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 7), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(" ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("NO", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("\n ", elements[3].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[4]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[4]));
             try expectPath("boolean", elements[4].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[4].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[5]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[5]));
             try testing.expectEqualStrings("WAY", elements[5].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("\n", elements[6].static_text);
         }
 
@@ -1796,17 +1806,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| This Is\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|\n", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("| A Line", elements[3].static_text);
         }
 
@@ -1821,14 +1831,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|\r\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 0), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
 
@@ -1843,14 +1853,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[0]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[0]));
             try expectPath("boolean", elements[0].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[0].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("^", elements[1].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n/", elements[2].static_text);
         }
 
@@ -1865,14 +1875,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("^", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("\n/\n", elements[2].static_text);
         }
 
@@ -1893,17 +1903,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| This Is\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|\n", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("| A Line", elements[3].static_text);
         }
 
@@ -1918,17 +1928,17 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[1]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[1]));
             try expectPath("boolean", elements[1].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[1].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("=", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("|", elements[3].static_text);
         }
     };
@@ -1946,14 +1956,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("| ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[1]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("partial", elements[1].partial.key);
             try testing.expect(elements[1].partial.indentation == null);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings(" |", elements[2].static_text);
         }
 
@@ -1968,20 +1978,20 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 5), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  ", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[1]));
             try expectPath("data", elements[1].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("  ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[3]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings("partial", elements[3].partial.key);
             try testing.expect(elements[3].partial.indentation == null);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings("\n", elements[4].static_text);
         }
 
@@ -1996,14 +2006,14 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|\r\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[1]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("partial", elements[1].partial.key);
             try testing.expect(elements[1].partial.indentation == null);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
 
@@ -2018,12 +2028,12 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.partial, elements[0]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("partial", elements[0].partial.key);
             try testing.expect(elements[0].partial.indentation != null);
             try testing.expectEqualStrings("  ", elements[0].partial.indentation.?);
 
-            try testing.expectEqual(Element.Type.static_text, elements[1]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings(">", elements[1].static_text);
         }
 
@@ -2038,10 +2048,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 2), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings(">\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[1]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("partial", elements[1].partial.key);
             try testing.expect(elements[1].partial.indentation != null);
             try testing.expectEqualStrings("  ", elements[1].partial.indentation.?);
@@ -2062,15 +2072,15 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  \\\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[1]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("partial", elements[1].partial.key);
             try testing.expect(elements[1].partial.indentation != null);
             try testing.expectEqualStrings("   ", elements[1].partial.indentation.?);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("  /", elements[2].static_text);
         }
 
@@ -2085,13 +2095,13 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 3), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("|", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.partial, elements[1]);
+            try testing.expectEqual(Element.Type.partial, std.meta.activeTag(elements[1]));
             try testing.expectEqualStrings("partial", elements[1].partial.key);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("|", elements[2].static_text);
         }
     };
@@ -2109,19 +2119,19 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 4), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("<", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("lambda", elements[1].section.path);
             try testing.expect(elements[1].section.inner_text != null);
             try testing.expectEqualStrings("{{x}}", elements[1].section.inner_text.?);
             try testing.expectEqual(@as(usize, 1), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[2]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[2]));
             try expectPath("x", elements[2].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[3]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[3]));
             try testing.expectEqualStrings(">", elements[3].static_text);
         }
 
@@ -2136,10 +2146,10 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 5), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("<", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
 
             const section = elements[1].section;
             try expectPath("lambda", section.path);
@@ -2147,7 +2157,7 @@ const tests = struct {
             try testing.expectEqualStrings("{{#lambda2}}{{x}}{{/lambda2}}", section.inner_text.?);
             try testing.expectEqual(@as(usize, 2), section.children_count);
 
-            try testing.expectEqual(Element.Type.section, elements[2]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[2]));
             const sub_section = elements[2].section;
 
             try expectPath("lambda2", sub_section.path);
@@ -2155,10 +2165,10 @@ const tests = struct {
             try testing.expectEqualStrings("{{x}}", sub_section.inner_text.?);
             try testing.expectEqual(@as(usize, 1), sub_section.children_count);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[3]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[3]));
             try expectPath("x", elements[3].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings(">", elements[4].static_text);
         }
     };
@@ -2184,39 +2194,39 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 11), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  Hello\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("section", elements[1].section.path);
             try testing.expectEqual(@as(usize, 8), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("Name: ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[3]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[3]));
             try expectPath("name", elements[3].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings("\nComments: ", elements[4].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[5]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[5]));
             try expectPath("comments", elements[5].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("\n", elements[6].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[7]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[7]));
             try expectPath("inverted", elements[7].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[7].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[8]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[8]));
             try testing.expectEqualStrings("Inverted text", elements[8].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[9]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[9]));
             try testing.expectEqualStrings("\n", elements[9].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[10]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[10]));
             try testing.expectEqualStrings("World", elements[10].static_text);
         }
 
@@ -2251,7 +2261,7 @@ const tests = struct {
 
             // Read from a file, assuring that this text should read four times from the buffer
             const read_buffer_size = (template_text.len / 4);
-            const SmallBufferTemplateloader = TemplateLoader(.{
+            const SmallBufferTemplateloader = TemplateLoaderType(.{
                 .source = .{ .file = .{ .read_buffer_size = read_buffer_size } },
                 .output = .cache,
             });
@@ -2269,39 +2279,39 @@ const tests = struct {
 
             try testing.expectEqual(@as(usize, 11), elements.len);
 
-            try testing.expectEqual(Element.Type.static_text, elements[0]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[0]));
             try testing.expectEqualStrings("  Hello\n", elements[0].static_text);
 
-            try testing.expectEqual(Element.Type.section, elements[1]);
+            try testing.expectEqual(Element.Type.section, std.meta.activeTag(elements[1]));
             try expectPath("section", elements[1].section.path);
             try testing.expectEqual(@as(usize, 8), elements[1].section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[2]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[2]));
             try testing.expectEqualStrings("Name: ", elements[2].static_text);
 
-            try testing.expectEqual(Element.Type.interpolation, elements[3]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(elements[3]));
             try expectPath("name", elements[3].interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[4]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[4]));
             try testing.expectEqualStrings("\nComments: ", elements[4].static_text);
 
-            try testing.expectEqual(Element.Type.unescaped_interpolation, elements[5]);
+            try testing.expectEqual(Element.Type.unescaped_interpolation, std.meta.activeTag(elements[5]));
             try expectPath("comments", elements[5].unescaped_interpolation);
 
-            try testing.expectEqual(Element.Type.static_text, elements[6]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[6]));
             try testing.expectEqualStrings("\n", elements[6].static_text);
 
-            try testing.expectEqual(Element.Type.inverted_section, elements[7]);
+            try testing.expectEqual(Element.Type.inverted_section, std.meta.activeTag(elements[7]));
             try expectPath("inverted", elements[7].inverted_section.path);
             try testing.expectEqual(@as(usize, 1), elements[7].inverted_section.children_count);
 
-            try testing.expectEqual(Element.Type.static_text, elements[8]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[8]));
             try testing.expectEqualStrings("Inverted text", elements[8].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[9]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[9]));
             try testing.expectEqualStrings("\n", elements[9].static_text);
 
-            try testing.expectEqual(Element.Type.static_text, elements[10]);
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(elements[10]));
             try testing.expectEqualStrings("World", elements[10].static_text);
         }
 
@@ -2351,7 +2361,7 @@ const tests = struct {
 
             // Strings are not ownned by the template,
             // Use this option when creating templates from a static string or when rendering direct to a stream
-            const RefStringsTemplate = TemplateLoader(.{
+            const RefStringsTemplate = TemplateLoaderType(.{
                 .source = .{ .file = .{} },
                 .output = .render,
             });
@@ -2428,8 +2438,8 @@ const tests = struct {
                 .success => |template| {
                     defer template.deinit(testing.allocator);
                     try testing.expectEqual(@as(usize, 2), template.elements.len);
-                    try testing.expectEqual(Element.Type.interpolation, template.elements[0]);
-                    try testing.expectEqual(Element.Type.static_text, template.elements[1]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(template.elements[0]));
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(template.elements[1]));
                     try testing.expectEqualStrings("hello", template.elements[0].interpolation[0]);
                     try testing.expectEqualStrings("world", template.elements[1].static_text);
                 },
@@ -2438,10 +2448,10 @@ const tests = struct {
 
         test "parseComptime API" {
             if (!comptime_tests_enabled) return error.SkipZigTest;
-            const template = mustache.parseComptime("{{hello}}world", .{}, .{});
+            const template = comptime mustache.parseComptime("{{hello}}world", .{}, .{});
             try testing.expectEqual(@as(usize, 2), template.elements.len);
-            try testing.expectEqual(Element.Type.interpolation, template.elements[0]);
-            try testing.expectEqual(Element.Type.static_text, template.elements[1]);
+            try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(template.elements[0]));
+            try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(template.elements[1]));
             try testing.expectEqualStrings("hello", template.elements[0].interpolation[0]);
             try testing.expectEqualStrings("world", template.elements[1].static_text);
         }
@@ -2474,8 +2484,8 @@ const tests = struct {
                 .success => |template| {
                     defer template.deinit(testing.allocator);
                     try testing.expectEqual(@as(usize, 2), template.elements.len);
-                    try testing.expectEqual(Element.Type.interpolation, template.elements[0]);
-                    try testing.expectEqual(Element.Type.static_text, template.elements[1]);
+                    try testing.expectEqual(Element.Type.interpolation, std.meta.activeTag(template.elements[0]));
+                    try testing.expectEqual(Element.Type.static_text, std.meta.activeTag(template.elements[1]));
                     try testing.expectEqualStrings("hello", template.elements[0].interpolation[0]);
                     try testing.expectEqualStrings("world", template.elements[1].static_text);
                 },

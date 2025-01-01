@@ -8,40 +8,41 @@ const testing = std.testing;
 const mustache = @import("../mustache.zig");
 const TemplateOptions = mustache.options.TemplateOptions;
 
-pub fn RefCountedSlice(comptime options: TemplateOptions) type {
+pub fn RefCountedSliceType(comptime options: TemplateOptions) type {
     return struct {
         slice: []const u8,
-        ref_counter: RefCounter(options),
+        ref_counter: RefCounterType(options),
     };
 }
 
-pub fn RefCounter(comptime options: TemplateOptions) type {
-    return if (options.isRefCounted()) RefCounterImpl else NoOpRefCounter;
+pub fn RefCounterType(comptime options: TemplateOptions) type {
+    return if (options.isRefCounted())
+        RefCounterImpl
+    else
+        NoOpRefCounter;
 }
 
 const RefCounterImpl = struct {
-    const Self = @This();
-
     const State = struct {
         counter: usize,
         buffer: []const u8,
     };
 
-    pub const null_ref = Self{};
+    pub const null_ref = RefCounterImpl{};
 
     state: ?*State = null,
 
-    pub fn create(allocator: Allocator, buffer: []const u8) Allocator.Error!Self {
+    pub fn create(allocator: Allocator, buffer: []const u8) Allocator.Error!RefCounterImpl {
         const state = try allocator.create(State);
         state.* = .{
             .counter = 1,
             .buffer = buffer,
         };
 
-        return Self{ .state = state };
+        return RefCounterImpl{ .state = state };
     }
 
-    pub fn ref(self: Self) Self {
+    pub fn ref(self: RefCounterImpl) RefCounterImpl {
         if (self.state) |state| {
             assert(state.counter != 0);
             state.counter += 1;
@@ -51,7 +52,7 @@ const RefCounterImpl = struct {
         }
     }
 
-    pub fn unRef(self: *Self, allocator: Allocator) void {
+    pub fn unRef(self: *RefCounterImpl, allocator: Allocator) void {
         if (self.state) |state| {
             assert(state.counter != 0);
             self.state = null;
@@ -65,22 +66,20 @@ const RefCounterImpl = struct {
 };
 
 const NoOpRefCounter = struct {
-    const Self = @This();
+    pub const null_ref = NoOpRefCounter{};
 
-    pub const null_ref = Self{};
-
-    pub inline fn init(allocator: Allocator, buffer: []const u8) Allocator.Error!Self {
+    pub inline fn init(allocator: Allocator, buffer: []const u8) Allocator.Error!NoOpRefCounter {
         _ = allocator;
         _ = buffer;
         return null_ref;
     }
 
-    pub inline fn ref(self: Self) Self {
+    pub inline fn ref(self: NoOpRefCounter) NoOpRefCounter {
         _ = self;
         return null_ref;
     }
 
-    pub inline fn unRef(self: Self, allocator: Allocator) void {
+    pub inline fn unRef(self: NoOpRefCounter, allocator: Allocator) void {
         _ = self;
         _ = allocator;
     }
@@ -97,7 +96,7 @@ test "ref and free" {
     // No defer here, should be freed by the ref_counter
     const some_text = try allocator.dupe(u8, "some text");
 
-    var counter_1 = try RefCounter(testing_options).create(allocator, some_text);
+    var counter_1 = try RefCounterType(testing_options).create(allocator, some_text);
     var counter_2 = counter_1.ref();
     var counter_3 = counter_2.ref();
 

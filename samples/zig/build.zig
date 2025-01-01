@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -19,14 +19,12 @@ pub fn build(b: *std.build.Builder) void {
             .optimize = mode,
         },
     );
-    exe.addAnonymousModule("mustache", .{
-        .source_file = .{
-            .path = "../../src/mustache.zig",
-        },
+    exe.root_module.addAnonymousImport("mustache", .{
+        .root_source_file = .{ .path = "../../src/mustache.zig" },
     });
-    exe.install();
+    b.installArtifact(exe);
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);

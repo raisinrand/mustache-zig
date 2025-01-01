@@ -1,7 +1,7 @@
 const std = @import("std");
 const CrossTarget = std.zig.CrossTarget;
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     const mode = b.standardOptimizeOption(.{});
 
     const target = b.standardTargetOptions(.{
@@ -10,36 +10,60 @@ pub fn build(b: *std.build.Builder) void {
         },
     });
 
-    // TODO re-add cross-compile
-    const static_lib = b.addStaticLibrary(.{
-        .name = "mustache-static",
-        .root_source_file = .{ .path = "src/exports.zig" },
-        .target = target,
-        .optimize = mode,
-    });
-    static_lib.linkLibC();
-    b.installArtifact(static_lib);
+    const ffi_libs = b.step("ffi", "Build FFI libs");
 
-    const dynamic_lib = b.addSharedLibrary(.{
-        .name = "mustache",
-        .root_source_file = .{ .path = "src/exports.zig" },
-        .target = target,
-        .optimize = mode,
-    });
-    dynamic_lib.linkLibC();
-    b.installArtifact(dynamic_lib);
+    // Zig cross-target x folder names
+    const platforms = .{
+        .{ "x86_64-linux-gnu", "linux-x64" },
+        .{ "x86_64-windows-gnu", "win-x64" },
+        .{ "x86_64-macos", "osx-x64" },
+    };
+
+    inline for (platforms) |platform| {
+        const cross_target = CrossTarget.parse(.{ .arch_os_abi = platform[0], .cpu_features = "baseline" }) catch unreachable;
+
+        // Appends the name "lib" on windows, in order to generate the same name "libmustache" for all platforms
+        const lib_name = comptime (if (std.mem.startsWith(u8, platform[1], "win")) "lib" else "") ++ "mustache";
+        const lib_path = "../lib/" ++ platform[1];
+
+        const lib = b.addSharedLibrary(.{
+            .name = lib_name,
+            .root_source_file = b.path("src/exports.zig"),
+            .target = b.resolveTargetQuery(cross_target),
+            .optimize = mode,
+            .link_libc = true,
+        });
+
+        const install_step = b.addInstallArtifact(
+            lib,
+            .{ .dest_dir = .{
+                .override = .{ .custom = lib_path },
+            } },
+        );
+        ffi_libs.dependOn(&install_step.step);
+    }
 
     // Zig module
-    _ = b.addModule("mustache", .{ .source_file = .{ .path = "src/mustache.zig" } });
+    _ = b.addModule("mustache", .{ .root_source_file = b.path("src/mustache.zig") });
 
     // C FFI Sample
-
     {
-        const c_sample = b.addExecutable(.{
-            .name = "sample",
-            .root_source_file = .{ .path = "samples/c/sample.c" },
+        const static_lib = b.addStaticLibrary(.{
+            .name = "mustache-static",
+            .root_source_file = b.path("src/exports.zig"),
             .target = target,
             .optimize = mode,
+            .link_libc = true,
+        });
+
+        const c_sample = b.addExecutable(.{
+            .name = "sample",
+            .root_source_file = null,
+            .target = target,
+            .optimize = mode,
+        });
+        c_sample.root_module.addCSourceFile(.{
+            .file = b.path("samples/c/sample.c"),
         });
         c_sample.linkLibrary(static_lib);
         c_sample.linkLibC();
@@ -57,7 +81,7 @@ pub fn build(b: *std.build.Builder) void {
     // Tests
 
     var comptime_tests = b.addOptions();
-    const comptime_tests_enabled = b.option(bool, "comptime-tests", "Run comptime tests") orelse false;
+    const comptime_tests_enabled = b.option(bool, "comptime-tests", "Run comptime tests") orelse true;
     comptime_tests.addOption(bool, "comptime_tests_enabled", comptime_tests_enabled);
 
     {
@@ -70,40 +94,40 @@ pub fn build(b: *std.build.Builder) void {
 
         const main_tests = b.addTest(.{
             .name = "tests",
-            .root_source_file = .{ .path = "src/mustache.zig" },
+            .root_source_file = b.path("src/mustache.zig"),
             .target = target,
             .optimize = mode,
+            .filter = filter,
         });
-        // main_tests.setFilter(filter);
-        main_tests.filter = filter;
 
-        main_tests.addOptions("build_comptime_tests", comptime_tests);
+        main_tests.root_module.addOptions("build_comptime_tests", comptime_tests);
         const coverage = b.option(bool, "test-coverage", "Generate test coverage") orelse false;
 
-        if (coverage) {
+        const run_main_tests = b.addRunArtifact(main_tests);
 
+        if (coverage) {
             // with kcov
-            main_tests.setExecCmd(&[_]?[]const u8{
-                "kcov",
-                "--exclude-pattern",
-                "lib/std",
-                "kcov-output",
-                null, // to get zig to use the --test-cmd-bin flag
+            const kcov = b.addSystemCommand(&.{
+                "kcov",    "--exclude-pattern",
+                "lib/std", "kcov-output",
             });
+            kcov.addArtifactArg(main_tests);
+
+            run_main_tests.step.dependOn(&kcov.step);
         }
 
-        const test_step = b.step("test", "Run library tests");
-        test_step.dependOn(&main_tests.step);
+        const test_step = b.step("test", "Run unit tests");
+        test_step.dependOn(&run_main_tests.step);
     }
 
     {
         const test_exe = b.addTest(.{
             .name = "tests",
-            .root_source_file = .{ .path = "src/mustache.zig" },
+            .root_source_file = b.path("src/mustache.zig"),
             .target = target,
             .optimize = mode,
         });
-        test_exe.addOptions("build_comptime_tests", comptime_tests);
+        test_exe.root_module.addOptions("build_comptime_tests", comptime_tests);
 
         const test_exe_install = b.addInstallArtifact(test_exe, .{});
 

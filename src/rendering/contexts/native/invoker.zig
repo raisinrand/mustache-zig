@@ -5,13 +5,15 @@ const meta = std.meta;
 const testing = std.testing;
 const assert = std.debug.assert;
 
+const stdx = @import("../../../stdx.zig");
+
 const mustache = @import("../../../mustache.zig");
 const Element = mustache.Element;
 const RenderOptions = mustache.options.RenderOptions;
 const Delimiters = mustache.Delimiters;
 
 const context = @import("../../context.zig");
-const PathResolution = context.PathResolution;
+const PathResolutionType = context.PathResolutionType;
 const Fields = context.Fields;
 const Escape = context.Escape;
 const LambdaContext = context.LambdaContext;
@@ -19,20 +21,33 @@ const LambdaContext = context.LambdaContext;
 const rendering = @import("../../rendering.zig");
 const map = @import("../../partials_map.zig");
 const lambda = @import("lambda.zig");
-const LambdaInvoker = lambda.LambdaInvoker;
+const LambdaInvokerType = lambda.LambdaInvokerType;
 
-pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime options: RenderOptions) type {
-    const RenderEngine = rendering.RenderEngine(.native, Writer, PartialsMap, options);
+pub fn InvokerType(
+    comptime Writer: type,
+    comptime PartialsMap: type,
+    comptime options: RenderOptions,
+) type {
+    const RenderEngine = rendering.RenderEngineType(
+        .native,
+        Writer,
+        PartialsMap,
+        options,
+    );
     const Context = RenderEngine.Context;
     const DataRender = RenderEngine.DataRender;
 
     return struct {
-        fn PathInvoker(comptime TError: type, comptime TReturn: type, comptime action_fn: anytype) type {
+        fn PathInvokerType(
+            comptime TError: type,
+            comptime TReturn: type,
+            comptime action_fn: anytype,
+        ) type {
             const action_type_info = @typeInfo(@TypeOf(action_fn));
             if (action_type_info != .Fn) @compileError("action_fn must be a function");
 
             return struct {
-                const Result = PathResolution(TReturn);
+                const PathResolution = PathResolutionType(TReturn);
 
                 const Depth = enum { Root, Leaf };
 
@@ -41,7 +56,7 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     data: anytype,
                     path: Element.Path,
                     index: ?usize,
-                ) TError!Result {
+                ) TError!PathResolution {
                     return find(.Root, action_param, data, path, index);
                 }
 
@@ -51,21 +66,21 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     data: anytype,
                     path: Element.Path,
                     index: ?usize,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const Data = @TypeOf(data);
                     if (Data == void) return .chain_broken;
 
                     const ctx = Fields.getRuntimeValue(data);
 
                     if (comptime lambda.isLambdaInvoker(Data)) {
-                        return Result{ .lambda = try action_fn(action_param, ctx) };
+                        return PathResolution{ .lambda = try action_fn(action_param, ctx) };
                     } else {
                         if (path.len > 0) {
                             return recursiveFind(depth, Data, action_param, ctx, path[0], path[1..], index);
                         } else if (index) |current_index| {
                             return iterateAt(Data, action_param, ctx, current_index);
                         } else {
-                            return Result{ .field = try action_fn(action_param, ctx) };
+                            return PathResolution{ .field = try action_fn(action_param, ctx) };
                         }
                     }
                 }
@@ -78,22 +93,37 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     current_path_part: []const u8,
                     next_path_parts: Element.Path,
                     index: ?usize,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const Data = @TypeOf(data);
-                    const typeInfo = @typeInfo(TValue);
-
-                    switch (comptime typeInfo) {
+                    switch (@typeInfo(TValue)) {
                         .Struct => {
-                            return findFieldPath(depth, TValue, action_param, data, current_path_part, next_path_parts, index);
+                            return findFieldPath(
+                                depth,
+                                TValue,
+                                action_param,
+                                data,
+                                current_path_part,
+                                next_path_parts,
+                                index,
+                            );
                         },
                         .Pointer => |info| switch (info.size) {
-                            .One => return try recursiveFind(depth, info.child, action_param, data, current_path_part, next_path_parts, index),
+                            .One => return try recursiveFind(
+                                depth,
+                                info.child,
+                                action_param,
+                                data,
+                                current_path_part,
+                                next_path_parts,
+                                index,
+                            ),
                             .Slice => {
-
                                 //Slice supports the "len" field,
                                 if (next_path_parts.len == 0 and std.mem.eql(u8, "len", current_path_part)) {
                                     return if (next_path_parts.len == 0)
-                                        Result{ .field = try action_fn(action_param, Fields.lenOf(Data, data)) }
+                                        PathResolution{
+                                            .field = try action_fn(action_param, Fields.lenOf(Data, data)),
+                                        }
                                     else
                                         .chain_broken;
                                 }
@@ -103,15 +133,24 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                         },
                         .Optional => |info| {
                             if (!Fields.isNull(Data, data)) {
-                                return try recursiveFind(depth, info.child, action_param, data, current_path_part, next_path_parts, index);
+                                return try recursiveFind(
+                                    depth,
+                                    info.child,
+                                    action_param,
+                                    data,
+                                    current_path_part,
+                                    next_path_parts,
+                                    index,
+                                );
                             }
                         },
                         .Array, .Vector => {
-
                             //Slice supports the "len" field,
                             if (next_path_parts.len == 0 and std.mem.eql(u8, "len", current_path_part)) {
                                 return if (next_path_parts.len == 0)
-                                    Result{ .field = try action_fn(action_param, Fields.lenOf(Data, data)) }
+                                    PathResolution{
+                                        .field = try action_fn(action_param, Fields.lenOf(Data, data)),
+                                    }
                                 else
                                     .chain_broken;
                             }
@@ -130,7 +169,7 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     current_path_part: []const u8,
                     next_path_parts: Element.Path,
                     index: ?usize,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const fields = std.meta.fields(TValue);
                     inline for (fields) |field| {
                         if (std.mem.eql(u8, field.name, current_path_part)) {
@@ -151,10 +190,10 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     action_param: anytype,
                     data: anytype,
                     current_path_part: []const u8,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const decls = comptime std.meta.declarations(TValue);
                     inline for (decls) |decl| {
-                        const has_fn = comptime meta.hasFn(decl.name)(TValue);
+                        const has_fn = comptime meta.hasFn(TValue, decl.name);
                         if (has_fn) {
                             const bound_fn = @field(TValue, decl.name);
                             const is_valid_lambda = comptime lambda.isValidLambdaFunction(TValue, @TypeOf(bound_fn));
@@ -179,7 +218,7 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     action_param: anytype,
                     data: anytype,
                     bound_fn: anytype,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const TData = @TypeOf(data);
                     const TFn = @TypeOf(bound_fn);
                     const params_len = @typeInfo(TFn).Fn.params.len;
@@ -189,17 +228,19 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     // Path: "person.lambda.address" > Returns "chain_broken"
                     // Path: "person.address.lambda" > "Resolved"
 
-                    const Impl = if (params_len == 1) LambdaInvoker(void, TFn) else LambdaInvoker(TData, TFn);
+                    const LambdaInvoker = if (params_len == 1)
+                        LambdaInvokerType(void, TFn)
+                    else
+                        LambdaInvokerType(TData, TFn);
 
                     // TData is likely a pointer, or a primitive value (See Field.byValue)
                     // This struct will be copied by value to the lambda context
-
-                    const impl = Impl{
+                    const invoker = LambdaInvoker{
                         .bound_fn = bound_fn,
                         .data = if (params_len == 1) {} else data,
                     };
 
-                    return Result{ .lambda = try action_fn(action_param, impl) };
+                    return PathResolution{ .lambda = try action_fn(action_param, invoker) };
                 }
 
                 fn iterateAt(
@@ -207,15 +248,15 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     action_param: anytype,
                     data: anytype,
                     index: usize,
-                ) TError!Result {
+                ) TError!PathResolution {
                     const Data = @TypeOf(data);
                     switch (@typeInfo(TValue)) {
                         .Struct => |info| {
                             if (info.is_tuple) {
-                                const derref = comptime mustache.isSingleItemPtr(Data);
+                                const derref = comptime stdx.isSingleItemPtr(Data);
                                 inline for (0..info.fields.len) |i| {
                                     if (index == i) {
-                                        return Result{
+                                        return PathResolution{
                                             .field = try action_fn(
                                                 action_param,
                                                 Fields.getTupleElement(if (derref) data.* else data, i),
@@ -230,20 +271,29 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                         // Booleans are evaluated on the iterator
                         .Bool => {
                             return if (data == true and index == 0)
-                                Result{ .field = try action_fn(action_param, data) }
+                                PathResolution{ .field = try action_fn(action_param, data) }
                             else
                                 .iterator_consumed;
                         },
                         .Pointer => |info| switch (info.size) {
                             .One => {
-                                return try iterateAt(info.child, action_param, Fields.lhs(Data, data), index);
+                                return try iterateAt(
+                                    info.child,
+                                    action_param,
+                                    Fields.lhs(Data, data),
+                                    index,
+                                );
                             },
                             .Slice => {
-
                                 //Slice of u8 is always string
                                 if (info.child != u8) {
                                     return if (index < data.len)
-                                        Result{ .field = try action_fn(action_param, Fields.getElement(Fields.lhs(Data, data), index)) }
+                                        PathResolution{
+                                            .field = try action_fn(
+                                                action_param,
+                                                Fields.getElement(Fields.lhs(Data, data), index),
+                                            ),
+                                        }
                                     else
                                         .iterator_consumed;
                                 }
@@ -254,20 +304,35 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                             //Array of u8 is always string
                             if (info.child != u8) {
                                 return if (index < data.len)
-                                    Result{ .field = try action_fn(action_param, Fields.getElement(Fields.lhs(Data, data), index)) }
+                                    PathResolution{
+                                        .field = try action_fn(
+                                            action_param,
+                                            Fields.getElement(Fields.lhs(Data, data), index),
+                                        ),
+                                    }
                                 else
                                     .iterator_consumed;
                             }
                         },
                         .Vector => {
                             return if (index < data.len)
-                                Result{ .field = try action_fn(action_param, Fields.getElement(Fields.lhs(Data, data), index)) }
+                                PathResolution{
+                                    .field = try action_fn(
+                                        action_param,
+                                        Fields.getElement(Fields.lhs(Data, data), index),
+                                    ),
+                                }
                             else
                                 .iterator_consumed;
                         },
                         .Optional => |info| {
                             return if (!Fields.isNull(Data, data))
-                                try iterateAt(info.child, action_param, Fields.lhs(Data, data), index)
+                                try iterateAt(
+                                    info.child,
+                                    action_param,
+                                    Fields.lhs(Data, data),
+                                    index,
+                                )
                             else
                                 .iterator_consumed;
                         },
@@ -275,7 +340,9 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
                     }
 
                     return if (index == 0)
-                        Result{ .field = try action_fn(action_param, data) }
+                        PathResolution{
+                            .field = try action_fn(action_param, data),
+                        }
                     else
                         .iterator_consumed;
                 }
@@ -286,9 +353,9 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             data: anytype,
             path: Element.Path,
             index: ?usize,
-        ) PathResolution(Context) {
-            const Get = PathInvoker(error{}, Context, getAction);
-            return Get.call(
+        ) PathResolutionType(Context) {
+            const GetPathInvoker = PathInvokerType(error{}, Context, getAction);
+            return GetPathInvoker.call(
                 {},
                 data,
                 path,
@@ -301,9 +368,13 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             data: anytype,
             path: Element.Path,
             escape: Escape,
-        ) (Allocator.Error || Writer.Error)!PathResolution(void) {
-            const Interpolate = PathInvoker(Allocator.Error || Writer.Error, void, interpolateAction);
-            return Interpolate.call(
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
+            const InterpolatePathInvoker = PathInvokerType(
+                Allocator.Error || Writer.Error,
+                void,
+                interpolateAction,
+            );
+            return InterpolatePathInvoker.call(
                 .{ data_render, escape },
                 data,
                 path,
@@ -315,9 +386,9 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             data_render: *DataRender,
             data: anytype,
             path: Element.Path,
-        ) PathResolution(usize) {
-            const CapacityHint = PathInvoker(error{}, usize, capacityHintAction);
-            return CapacityHint.call(
+        ) PathResolutionType(usize) {
+            const CapacityHintPathInvoker = PathInvokerType(error{}, usize, capacityHintAction);
+            return CapacityHintPathInvoker.call(
                 data_render,
                 data,
                 path,
@@ -332,9 +403,13 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             escape: Escape,
             delimiters: Delimiters,
             path: Element.Path,
-        ) (Allocator.Error || Writer.Error)!PathResolution(void) {
-            const ExpandLambda = PathInvoker(Allocator.Error || Writer.Error, void, expandLambdaAction);
-            return ExpandLambda.call(
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
+            const ExpandLambdaPathInvoker = PathInvokerType(
+                Allocator.Error || Writer.Error,
+                void,
+                expandLambdaAction,
+            );
+            return ExpandLambdaPathInvoker.call(
                 .{ data_render, inner_text, escape, delimiters },
                 data,
                 path,
@@ -344,14 +419,16 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
 
         fn getAction(param: void, value: anytype) error{}!Context {
             _ = param;
-            return RenderEngine.getContext(value);
+            return RenderEngine.getContextType(value);
         }
 
         fn interpolateAction(
             params: anytype,
             value: anytype,
         ) (Allocator.Error || Writer.Error)!void {
-            if (comptime !mustache.isTuple(@TypeOf(params)) and params.len != 2) @compileError("Incorrect params " ++ @typeName(@TypeOf(params)));
+            if (comptime !stdx.isTuple(@TypeOf(params)) and params.len != 2) {
+                @compileError("Incorrect params " ++ @typeName(@TypeOf(params)));
+            }
 
             var data_render: *DataRender = params.@"0";
             const escape: Escape = params.@"1";
@@ -369,7 +446,10 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             params: anytype,
             value: anytype,
         ) (Allocator.Error || Writer.Error)!void {
-            if (comptime !mustache.isTuple(@TypeOf(params)) and params.len != 4) @compileError("Incorrect params " ++ @typeName(@TypeOf(params)));
+            if (comptime !stdx.isTuple(@TypeOf(params)) and params.len != 4) {
+                @compileError("Incorrect params " ++ @typeName(@TypeOf(params)));
+            }
+
             if (comptime !lambda.isLambdaInvoker(@TypeOf(value))) return;
 
             const Error = Allocator.Error || Writer.Error;
@@ -379,14 +459,14 @@ pub fn Invoker(comptime Writer: type, comptime PartialsMap: type, comptime optio
             const escape: Escape = params.@"2";
             const delimiters: Delimiters = params.@"3";
 
-            const Impl = lambda.LambdaContextImpl(Writer, PartialsMap, options);
+            const Impl = lambda.LambdaContextImplType(Writer, PartialsMap, options);
             var impl = Impl{
                 .data_render = data_render,
                 .escape = escape,
                 .delimiters = delimiters,
             };
 
-            const lambda_context = impl.context(inner_text);
+            const lambda_context = impl.ContextType(inner_text);
 
             // Errors are intentionally ignored on lambda calls, interpolating empty strings
             value.invoke(lambda_context) catch |e| {
@@ -417,7 +497,7 @@ fn isOnErrorSet(comptime Error: type, value: anyerror) bool {
     return false;
 }
 
-const comptime_tests_enabled = false; // @import("build_comptime_tests").comptime_tests_enabled;
+const comptime_tests_enabled = @import("build_comptime_tests").comptime_tests_enabled;
 test "isOnErrorSet" {
     const A = error{ a1, a2 };
     const B = error{ b1, b2 };
@@ -483,16 +563,37 @@ const invoker_tests = struct {
 
     const parsing = @import("../../../parsing/parser.zig");
     const dummy_options = RenderOptions{ .template = .{} };
-    const DummyParser = parsing.Parser(.{ .source = .{ .string = .{ .copy_strings = false } }, .output = .render, .load_mode = .runtime_loaded });
+    const DummyParser = parsing.ParserType(.{
+        .source = .{ .string = .{ .copy_strings = false } },
+        .output = .render,
+        .load_mode = .runtime_loaded,
+    });
     const DummyWriter = @TypeOf(std.io.null_writer);
-    const DummyPartialsMap = map.PartialsMap(void, dummy_options);
-    const DummyRenderEngine = rendering.RenderEngine(.native, DummyWriter, DummyPartialsMap, dummy_options);
-    const DummyInvoker = Invoker(DummyWriter, DummyPartialsMap, dummy_options);
-    const DummyCaller = DummyInvoker.PathInvoker(error{}, bool, dummyAction);
+    const DummyPartialsMap = map.PartialsMapType(
+        void,
+        dummy_options,
+    );
+    const DummyRenderEngine = rendering.RenderEngineType(
+        .native,
+        DummyWriter,
+        DummyPartialsMap,
+        dummy_options,
+    );
+    const DummyInvoker = InvokerType(
+        DummyWriter,
+        DummyPartialsMap,
+        dummy_options,
+    );
+    const DummyPathInvoker = DummyInvoker.PathInvokerType(
+        error{},
+        bool,
+        dummyAction,
+    );
 
     fn dummyAction(comptime TExpected: type, value: anytype) error{}!bool {
         const TValue = @TypeOf(value);
-        const expected = comptime (TExpected == TValue) or (mustache.isSingleItemPtr(TValue) and meta.Child(TValue) == TExpected);
+        const expected = comptime (TExpected == TValue) or
+            (stdx.isSingleItemPtr(TValue) and meta.Child(TValue) == TExpected);
         if (!expected) {
             std.log.err(
                 \\ Invalid iterator type
@@ -503,14 +604,14 @@ const invoker_tests = struct {
         return expected;
     }
 
-    fn dummySeek(comptime TExpected: type, data: anytype, identifier: []const u8, index: ?usize) !DummyCaller.Result {
+    fn dummySeek(comptime TExpected: type, data: anytype, identifier: []const u8, index: ?usize) !DummyPathInvoker.PathResolution {
         var parser = try DummyParser.init(testing.allocator, "", .{});
         defer parser.deinit();
 
         const path = try parser.parsePath(identifier);
         defer Element.destroyPath(testing.allocator, false, path);
 
-        return try DummyCaller.call(TExpected, &data, path, index);
+        return try DummyPathInvoker.call(TExpected, &data, path, index);
     }
 
     fn expectFound(comptime TExpected: type, data: anytype, path: []const u8) !void {

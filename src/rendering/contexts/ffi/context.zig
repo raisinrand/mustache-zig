@@ -11,12 +11,12 @@ const Element = mustache.Element;
 
 const rendering = @import("../../rendering.zig");
 const map = @import("../../partials_map.zig");
-const ContextType = rendering.ContextType;
+const ContextSource = rendering.ContextSource;
 
 const context = @import("../../context.zig");
-const PathResolution = context.PathResolution;
+const PathResolutionType = context.PathResolutionType;
 const Escape = context.Escape;
-const ContextIterator = context.ContextIterator;
+const ContextIteratorType = context.ContextIteratorType;
 
 const ffi_exports = @import("../../../exports.zig");
 const extern_types = @import("../../../ffi/extern_types.zig");
@@ -24,12 +24,16 @@ const extern_types = @import("../../../ffi/extern_types.zig");
 /// FFI context can resolve paths from foreign elements
 /// This struct implements the expected context interface using static dispatch.
 /// Pub functions must be kept in sync with other contexts implementation
-pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime options: RenderOptions) type {
-    const RenderEngine = rendering.RenderEngine(.ffi, Writer, PartialsMap, options);
+pub fn ContextType(
+    comptime Writer: type,
+    comptime PartialsMap: type,
+    comptime options: RenderOptions,
+) type {
+    const RenderEngine = rendering.RenderEngineType(.ffi, Writer, PartialsMap, options);
     const DataRender = RenderEngine.DataRender;
 
     return struct {
-        const Self = @This();
+        const Context = @This();
 
         /// Implements a Writer exposing a function pointer to be called from the FFI side
         pub const FfiWriter = struct {
@@ -54,20 +58,20 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
 
         pub const ContextStack = struct {
             parent: ?*const @This(),
-            ctx: Self,
+            ctx: Context,
         };
 
-        pub const Iterator = ContextIterator(Self);
+        pub const ContextIterator = ContextIteratorType(Context);
 
         user_data: extern_types.UserData = undefined,
 
-        pub fn context(user_data: extern_types.UserData) Self {
+        pub fn ContextType(user_data: extern_types.UserData) Context {
             return .{
                 .user_data = user_data,
             };
         }
 
-        pub inline fn get(self: Self, path: Element.Path, index: ?usize) PathResolution(Self) {
+        pub inline fn get(self: Context, path: Element.Path, index: ?usize) PathResolutionType(Context) {
             if (self.user_data.get != null) {
                 if (path.len > 0) {
                     var root_path = extern_types.PathPart{
@@ -90,7 +94,13 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             return .chain_broken;
         }
 
-        fn getFromPath(self: Self, root_path: *const extern_types.PathPart, leaf_path: *extern_types.PathPart, path: Element.Path, index: ?usize) PathResolution(Self) {
+        fn getFromPath(
+            self: Context,
+            root_path: *const extern_types.PathPart,
+            leaf_path: *extern_types.PathPart,
+            path: Element.Path,
+            index: ?usize,
+        ) PathResolutionType(Context) {
             var current_part: extern_types.PathPart = undefined;
             if (path.len > 0) {
                 current_part = extern_types.PathPart{
@@ -111,7 +121,11 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             }
         }
 
-        inline fn callGet(self: Self, root_path: ?*const extern_types.PathPart, index: ?usize) PathResolution(Self) {
+        inline fn callGet(
+            self: Context,
+            root_path: ?*const extern_types.PathPart,
+            index: ?usize,
+        ) PathResolutionType(Context) {
             var out_value: extern_types.UserData = undefined;
             var ffi_path: extern_types.Path = .{
                 .root = root_path,
@@ -125,16 +139,16 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
                 .NOT_FOUND_IN_CONTEXT => .not_found_in_context,
                 .CHAIN_BROKEN => .chain_broken,
                 .ITERATOR_CONSUMED => .iterator_consumed,
-                .FIELD => .{ .field = RenderEngine.getContext(out_value) },
-                .LAMBDA => .{ .lambda = RenderEngine.getContext(out_value) },
+                .FIELD => .{ .field = RenderEngine.getContextType(out_value) },
+                .LAMBDA => .{ .lambda = RenderEngine.getContextType(out_value) },
             };
         }
 
         pub inline fn capacityHint(
-            self: Self,
+            self: Context,
             data_render: *DataRender,
             path: Element.Path,
-        ) PathResolution(usize) {
+        ) PathResolutionType(usize) {
             _ = data_render;
             if (self.user_data.capacityHint != null) {
                 if (path.len > 0) {
@@ -158,7 +172,12 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             return .chain_broken;
         }
 
-        fn capacityHintFromPath(self: Self, root_path: *const extern_types.PathPart, leaf_path: *extern_types.PathPart, path: Element.Path) PathResolution(usize) {
+        fn capacityHintFromPath(
+            self: Context,
+            root_path: *const extern_types.PathPart,
+            leaf_path: *extern_types.PathPart,
+            path: Element.Path,
+        ) PathResolutionType(usize) {
             var current_part: extern_types.PathPart = undefined;
             if (path.len > 0) {
                 current_part = extern_types.PathPart{
@@ -179,7 +198,10 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             }
         }
 
-        inline fn callCapacityHint(self: Self, root_path: ?*const extern_types.PathPart) PathResolution(usize) {
+        inline fn callCapacityHint(
+            self: Context,
+            root_path: ?*const extern_types.PathPart,
+        ) PathResolutionType(usize) {
             var ffi_path: extern_types.Path = .{
                 .root = root_path,
                 .index = 0,
@@ -199,34 +221,58 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
         }
 
         pub inline fn interpolate(
-            self: Self,
+            self: Context,
             data_render: *DataRender,
             path: Element.Path,
             escape: Escape,
-        ) (Allocator.Error || Writer.Error)!PathResolution(void) {
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
             if (self.user_data.interpolate != null) {
                 if (path.len > 0) {
                     var root_path = extern_types.PathPart{
                         .value = path[0].ptr,
-                        .size = @as(u32, @intCast(path[0].len)),
+                        .size = @as(
+                            u32,
+                            @intCast(path[0].len),
+                        ),
                         .next = null,
                     };
 
                     if (path.len == 1) {
-                        return try self.callInterpolate(data_render, &root_path, escape);
+                        return try self.callInterpolate(
+                            data_render,
+                            &root_path,
+                            escape,
+                        );
                     } else {
                         @setCold(true);
-                        return try self.interpolateFromPath(data_render, &root_path, &root_path, path[1..], escape);
+                        return try self.interpolateFromPath(
+                            data_render,
+                            &root_path,
+                            &root_path,
+                            path[1..],
+                            escape,
+                        );
                     }
                 } else {
-                    return try self.callInterpolate(data_render, null, escape);
+                    return try self.callInterpolate(
+                        data_render,
+                        null,
+                        escape,
+                    );
                 }
             }
 
-            return PathResolution(void).chain_broken;
+            return PathResolutionType(void).chain_broken;
         }
 
-        fn interpolateFromPath(self: Self, data_render: *DataRender, root_path: *const extern_types.PathPart, leaf_path: *extern_types.PathPart, path: Element.Path, escape: Escape) (Allocator.Error || Writer.Error)!PathResolution(void) {
+        fn interpolateFromPath(
+            self: Context,
+            data_render: *DataRender,
+            root_path: *const extern_types.PathPart,
+            leaf_path: *extern_types.PathPart,
+            path: Element.Path,
+            escape: Escape,
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
             var current_part: extern_types.PathPart = undefined;
             if (path.len > 0) {
                 current_part = extern_types.PathPart{
@@ -241,13 +287,28 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             }
 
             if (path.len > 1) {
-                return try self.interpolateFromPath(data_render, root_path, &current_part, path[1..], escape);
+                return try self.interpolateFromPath(
+                    data_render,
+                    root_path,
+                    &current_part,
+                    path[1..],
+                    escape,
+                );
             } else {
-                return try self.callInterpolate(data_render, root_path, escape);
+                return try self.callInterpolate(
+                    data_render,
+                    root_path,
+                    escape,
+                );
             }
         }
 
-        inline fn callInterpolate(self: Self, data_render: *DataRender, root_path: ?*const extern_types.PathPart, escape: Escape) (Allocator.Error || Writer.Error)!PathResolution(void) {
+        inline fn callInterpolate(
+            self: Context,
+            data_render: *DataRender,
+            root_path: ?*const extern_types.PathPart,
+            escape: Escape,
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
             var ffi_path: extern_types.Path = .{
                 .root = root_path,
                 .index = 0,
@@ -262,22 +323,22 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             const ret = self.user_data.interpolate.?(&writer, FfiWriter.write, self.user_data.handle, &ffi_path);
 
             return switch (ret) {
-                .NOT_FOUND_IN_CONTEXT => PathResolution(void).not_found_in_context,
-                .CHAIN_BROKEN => PathResolution(void).chain_broken,
-                .ITERATOR_CONSUMED => PathResolution(void).iterator_consumed,
-                .FIELD => PathResolution(void).field,
-                .LAMBDA => PathResolution(void).lambda,
+                .NOT_FOUND_IN_CONTEXT => .not_found_in_context,
+                .CHAIN_BROKEN => .chain_broken,
+                .ITERATOR_CONSUMED => .iterator_consumed,
+                .FIELD => .field,
+                .LAMBDA => .lambda,
             };
         }
 
         pub inline fn expandLambda(
-            self: Self,
+            self: Context,
             data_render: *DataRender,
             path: Element.Path,
             inner_text: []const u8,
             escape: Escape,
             delimiters: Delimiters,
-        ) (Allocator.Error || Writer.Error)!PathResolution(void) {
+        ) (Allocator.Error || Writer.Error)!PathResolutionType(void) {
             _ = self;
             _ = data_render;
             _ = path;
@@ -285,22 +346,25 @@ pub fn Context(comptime Writer: type, comptime PartialsMap: type, comptime optio
             _ = escape;
             _ = delimiters;
 
-            // not supported yet
-            return PathResolution(void).chain_broken;
+            // TODO: not supported yet
+            return .chain_broken;
         }
 
-        pub fn iterator(self: *const Self, path: Element.Path) PathResolution(Iterator) {
+        pub fn iterator(
+            self: *const Context,
+            path: Element.Path,
+        ) PathResolutionType(ContextIterator) {
             const result = self.get(path, 0);
 
             return switch (result) {
                 .field => |item| .{
-                    .field = Iterator.initSequence(self, path, item),
+                    .field = ContextIterator.initSequence(self, path, item),
                 },
                 .iterator_consumed => .{
-                    .field = Iterator.initEmpty(),
+                    .field = ContextIterator.initEmpty(),
                 },
                 .lambda => |item| .{
-                    .field = Iterator.initLambda(item),
+                    .field = ContextIterator.initLambda(item),
                 },
                 .chain_broken => .chain_broken,
                 .not_found_in_context => .not_found_in_context,
@@ -315,12 +379,12 @@ test {
 
 const context_tests = struct {
     const dummy_options = RenderOptions{ .string = .{} };
-    const DummyPartialsMap = map.PartialsMap(void, dummy_options);
+    const DummyPartialsMap = map.PartialsMapType(void, dummy_options);
     const DummyWriter = std.ArrayList(u8).Writer;
-    const DummyRenderEngine = rendering.RenderEngine(.ffi, DummyWriter, DummyPartialsMap, dummy_options);
+    const DummyRenderEngine = rendering.RenderEngineType(.ffi, DummyWriter, DummyPartialsMap, dummy_options);
 
     const parsing = @import("../../../parsing/parser.zig");
-    const DummyParser = parsing.Parser(.{ .source = .{ .string = .{ .copy_strings = false } }, .output = .render, .load_mode = .runtime_loaded });
+    const DummyParser = parsing.ParserType(.{ .source = .{ .string = .{ .copy_strings = false } }, .output = .render, .load_mode = .runtime_loaded });
     const dummy_map = DummyPartialsMap.init({});
 
     fn expectPath(allocator: Allocator, path: []const u8) !Element.Path {
@@ -356,8 +420,6 @@ const context_tests = struct {
     }
 
     const Person = struct {
-        const Self = @This();
-
         id: u32,
         name: []const u8,
         boss: ?*Person = null,
@@ -451,14 +513,14 @@ const context_tests = struct {
                     var buffer: [64]u8 = undefined;
                     const len = std.fmt.formatIntBuf(&buffer, person.id, 10, .lower, .{});
 
-                    const ret = writer_fn(writer_handle, &buffer, @as(u32, @intCast(len)));
+                    const ret = writer_fn(writer_handle, &buffer, @intCast(len));
                     if (ret != .SUCCESS) return .CHAIN_BROKEN;
 
                     return .FIELD;
                 } else if (std.mem.eql(u8, path_value, "name")) {
                     if (root.next != null) return .NOT_FOUND_IN_CONTEXT;
 
-                    const ret = writer_fn(writer_handle, person.name.ptr, @as(u32, @intCast(person.name.len)));
+                    const ret = writer_fn(writer_handle, person.name.ptr, @intCast(person.name.len));
                     if (ret != .SUCCESS) return .CHAIN_BROKEN;
 
                     return .FIELD;
@@ -473,7 +535,12 @@ const context_tests = struct {
                             .has_index = path.has_index,
                         };
 
-                        return interpolate(writer_handle, writer_fn, person.boss.?, &next_path);
+                        return interpolate(
+                            writer_handle,
+                            writer_fn,
+                            person.boss.?,
+                            &next_path,
+                        );
                     }
                 }
             }
@@ -481,7 +548,11 @@ const context_tests = struct {
             return .NOT_FOUND_IN_CONTEXT;
         }
 
-        pub fn expandLambda(lambda_handle: extern_types.LambdaHandle, user_data_handle: extern_types.UserDataHandle, path: *const extern_types.Path) callconv(.C) extern_types.PathResolution {
+        pub fn expandLambda(
+            lambda_handle: extern_types.LambdaHandle,
+            user_data_handle: extern_types.UserDataHandle,
+            path: *const extern_types.Path,
+        ) callconv(.C) extern_types.PathResolution {
             _ = lambda_handle;
             _ = user_data_handle;
             _ = path;
@@ -489,8 +560,8 @@ const context_tests = struct {
             return .NOT_FOUND_IN_CONTEXT;
         }
 
-        fn getSelf(user_data_handle: extern_types.UserDataHandle) *const Self {
-            return @as(*const Self, @ptrCast(@alignCast(user_data_handle)));
+        fn getSelf(user_data_handle: extern_types.UserDataHandle) *const Person {
+            return @ptrCast(@alignCast(user_data_handle));
         }
 
         pub fn getUserData(handle: *const anyopaque) extern_types.UserData {
@@ -513,7 +584,7 @@ const context_tests = struct {
         };
 
         const user_data = Person.getUserData(&person);
-        var person_ctx = DummyRenderEngine.getContext(user_data);
+        var person_ctx = DummyRenderEngine.getContextType(user_data);
 
         const id_ctx = id_ctx: {
             const path = try expectPath(allocator, "id");
@@ -566,7 +637,7 @@ const context_tests = struct {
         person.boss = &next_person;
 
         const user_data = Person.getUserData(&person);
-        var person_ctx = DummyRenderEngine.getContext(user_data);
+        var person_ctx = DummyRenderEngine.getContextType(user_data);
 
         const id_ctx = id_ctx: {
             const path = try expectPath(allocator, "boss.id");
@@ -582,8 +653,7 @@ const context_tests = struct {
         };
 
         // Expects that the context was set with the field address
-        // The context can be set with any value, this test sets a pointer
-        // TODO put this back
+        // The context can be set with any value, this test sets a pointer.
         try testing.expectEqual(@intFromPtr(&person.boss.?.id), @intFromPtr(id_ctx.user_data.handle));
 
         const name_ctx = name_ctx: {
@@ -615,7 +685,7 @@ const context_tests = struct {
         };
 
         const user_data = Person.getUserData(&person);
-        const person_ctx = DummyRenderEngine.getContext(user_data);
+        const person_ctx = DummyRenderEngine.getContextType(user_data);
 
         const writer = list.writer();
 
@@ -647,7 +717,7 @@ const context_tests = struct {
 
         person.boss = &next_person;
         const user_data = Person.getUserData(&person);
-        const person_ctx = DummyRenderEngine.getContext(user_data);
+        const person_ctx = DummyRenderEngine.getContextType(user_data);
 
         const writer = list.writer();
 

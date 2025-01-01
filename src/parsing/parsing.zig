@@ -40,7 +40,7 @@ pub const PartType = enum(u8) {
     }
 };
 
-pub fn TrimmingIndex(comptime options: TemplateOptions) type {
+pub fn TrimmingIndexType(comptime options: TemplateOptions) type {
     return if (options.features.preseve_line_breaks_and_indentation)
         union(enum) {
             preserve_whitespaces,
@@ -59,12 +59,12 @@ pub const IndexBookmark = struct {
     text_index: u32,
 };
 
-pub const Node = @import("node.zig").Node;
-pub const TextPart = @import("text_part.zig").TextPart;
-pub const TextScanner = @import("text_scanner.zig").TextScanner;
-pub const Trimmer = @import("trimmer.zig").Trimmer;
-pub const FileReader = @import("file_reader.zig").FileReader;
-pub const Parser = @import("parser.zig").Parser;
+pub const NodeType = @import("node.zig").NodeType;
+pub const TextPartType = @import("text_part.zig").TextPartType;
+pub const TextScannerType = @import("text_scanner.zig").TextScannerType;
+pub const TrimmerType = @import("trimmer.zig").TrimmerType;
+pub const FileReaderType = @import("file_reader.zig").FileReaderType;
+pub const ParserType = @import("parser.zig").ParserType;
 
 test {
     _ = testing.refAllDecls(@This());

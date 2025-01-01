@@ -4,6 +4,8 @@ const meta = std.meta;
 const testing = std.testing;
 const assert = std.debug.assert;
 
+const stdx = @import("../stdx.zig");
+
 const mustache = @import("../mustache.zig");
 const Element = mustache.Element;
 
@@ -16,18 +18,20 @@ const ErasedType = native_context.ErasedType;
 const extern_types = @import("../ffi/extern_types.zig");
 
 pub inline fn getField(data: anytype, comptime field_name: []const u8) field_type: {
-    const TField = FieldType(@TypeOf(data), field_name);
+    const Data = @TypeOf(data);
+    const TField = FieldType(Data, field_name);
 
-    if (TField == comptime_int) {
-        const comptime_value = @field(data, field_name);
-        break :field_type RuntimeInt(comptime_value);
-    } else if (TField == comptime_float) {
-        const comptime_value = @field(data, field_name);
-        break :field_type RuntimeFloat(comptime_value);
-    } else if (TField == @Type(.Null)) {
-        break :field_type ?u0;
-    } else {
-        break :field_type FieldRef(@TypeOf(data), field_name);
+    switch (@typeInfo(TField)) {
+        .ComptimeInt => {
+            const comptime_value = @field(data, field_name);
+            break :field_type RuntimeInt(comptime_value);
+        },
+        .ComptimeFloat => {
+            const comptime_value = @field(data, field_name);
+            break :field_type RuntimeFloat(comptime_value);
+        },
+        .Null => break :field_type ?u0,
+        else => break :field_type FieldRef(Data, field_name),
     }
 } {
     const Data = @TypeOf(data);
@@ -48,23 +52,25 @@ pub inline fn getField(data: anytype, comptime field_name: []const u8) field_typ
         return runtime_null;
     }
 
-    return if (is_by_value) @field(lhs(Data, data), field_name) else &@field(lhs(Data, data), field_name);
+    return if (is_by_value) @field(
+        lhs(Data, data),
+        field_name,
+    ) else &@field(
+        lhs(Data, data),
+        field_name,
+    );
 }
 
-pub inline fn getRuntimeValue(ctx: anytype) context_type: {
+pub inline fn getRuntimeValue(ctx: anytype) type: {
     const TContext = @TypeOf(ctx);
-
-    if (TContext == comptime_int) {
-        const comptime_value = ctx;
-        break :context_type RuntimeInt(comptime_value);
-    } else if (TContext == comptime_float) {
-        const comptime_value = ctx;
-        break :context_type RuntimeFloat(comptime_value);
-    } else if (TContext == @Type(.Null)) {
-        break :context_type ?u0;
-    } else {
-        break :context_type TContext;
-    }
+    break :type if (TContext == comptime_int)
+        RuntimeInt(ctx)
+    else if (TContext == comptime_float)
+        RuntimeFloat(ctx)
+    else if (TContext == @Type(.Null))
+        ?u0
+    else
+        TContext;
 } {
     const TContext = @TypeOf(ctx);
 
@@ -86,7 +92,7 @@ pub inline fn getRuntimeValue(ctx: anytype) context_type: {
 
 pub inline fn getTupleElement(ctx: anytype, comptime index: usize) element_type: {
     const T = @TypeOf(ctx);
-    assert(mustache.isTuple(T));
+    assert(stdx.isTuple(T));
 
     const ElementType = @TypeOf(ctx[index]);
     if (ElementType == comptime_int) {
@@ -125,7 +131,7 @@ pub inline fn getTupleElement(ctx: anytype, comptime index: usize) element_type:
 pub inline fn getElement(ctx: anytype, index: usize) element_type: {
     const T = @TypeOf(ctx);
 
-    const is_indexable = mustache.isIndexable(T) and !mustache.isTuple(T);
+    const is_indexable = stdx.isIndexable(T) and !stdx.isTuple(T);
     if (!is_indexable) @compileError("Array, slice or vector expected");
 
     const ElementType = @TypeOf(ctx[0]);
@@ -147,7 +153,7 @@ pub inline fn getElement(ctx: anytype, index: usize) element_type: {
 
 fn Lhs(comptime T: type) type {
     comptime {
-        if (mustache.is(.Optional)(T)) {
+        if (@typeInfo(T) == .Optional) {
             return Lhs(meta.Child(T));
         } else if (needsDerref(T)) {
             return Lhs(meta.Child(T));
@@ -158,7 +164,7 @@ fn Lhs(comptime T: type) type {
 }
 
 pub inline fn lhs(comptime T: type, value: T) Lhs(T) {
-    if (comptime mustache.is(.Optional)(T)) {
+    if (@typeInfo(T) == .Optional) {
         return lhs(@TypeOf(value.?), value.?);
     } else if (comptime needsDerref(T)) {
         return lhs(@TypeOf(value.*), value.*);
@@ -169,9 +175,11 @@ pub inline fn lhs(comptime T: type, value: T) Lhs(T) {
 
 pub inline fn needsDerref(comptime T: type) bool {
     comptime {
-        if (mustache.isSingleItemPtr(T)) {
+        if (stdx.isSingleItemPtr(T)) {
             const Child = meta.Child(T);
-            return mustache.isSingleItemPtr(Child) or mustache.isSlice(Child) or mustache.is(.Optional)(Child);
+            return stdx.isSingleItemPtr(Child) or
+                stdx.isSlice(Child) or
+                @typeInfo(Child) == .Optional;
         } else {
             return false;
         }
@@ -180,7 +188,7 @@ pub inline fn needsDerref(comptime T: type) bool {
 
 pub fn byValue(comptime TField: type) bool {
     comptime {
-        if (mustache.is(.EnumLiteral)(TField)) @compileError(
+        if (@typeInfo(TField) == .EnumLiteral) @compileError(
             \\Enum literal is not supported for interpolation
             \\Error: ir_resolve_lazy_recurse. This is a bug in the Zig compiler
             \\Type:
@@ -190,8 +198,8 @@ pub fn byValue(comptime TField: type) bool {
         const size = if (TField == @TypeOf(null)) 0 else @sizeOf(TField);
         const is_zero_size = size == 0;
 
-        const is_pointer = mustache.isSlice(TField) or
-            mustache.isSingleItemPtr(TField);
+        const is_pointer = stdx.isSlice(TField) or
+            stdx.isSingleItemPtr(TField);
 
         const is_json = TField == std.json.Value;
 
@@ -200,12 +208,11 @@ pub fn byValue(comptime TField: type) bool {
         const is_lambda_invoker = size <= max_size and lambda.isLambdaInvoker(TField);
 
         const can_embed = size <= max_size and
-            (mustache.is(.Enum)(TField) or
-            mustache.is(.EnumLiteral)(TField) or
-            TField == bool or
-            mustache.isIntegral(TField) or
-            mustache.isFloat(TField) or
-            (mustache.is(.Optional)(TField) and byValue(meta.Child(TField))));
+            switch (@typeInfo(TField)) {
+            .Enum, .EnumLiteral, .Bool, .Int, .Float => true,
+            .Optional => |info| byValue(info.child),
+            else => false,
+        };
 
         return is_json or is_ffi_userdata or is_zero_size or is_pointer or is_lambda_invoker or can_embed;
     }
@@ -239,29 +246,33 @@ pub inline fn lenOf(comptime T: type, data: T) ?usize {
 }
 
 fn FieldRef(comptime T: type, comptime field_name: []const u8) type {
-    comptime {
-        const TField = FieldType(T, field_name);
+    const TField = FieldType(T, field_name);
 
-        assert(TField != comptime_int);
-        assert(TField != comptime_float);
-        assert(TField != @TypeOf(.Null));
+    assert(TField != comptime_int);
+    assert(TField != comptime_float);
+    assert(TField != @TypeOf(.Null));
 
-        if (mustache.is(.Optional)(T)) {
-            return FieldRef(meta.Child(T), field_name);
-        } else if (needsDerref(T)) {
-            return FieldRef(meta.Child(T), field_name);
-        } else {
-            const instance: T = undefined;
-            return if (byValue(TField)) @TypeOf(@field(instance, field_name)) else @TypeOf(&@field(instance, field_name));
-        }
+    if (@typeInfo(T) == .Optional) {
+        return FieldRef(meta.Child(T), field_name);
+    } else if (needsDerref(T)) {
+        return FieldRef(meta.Child(T), field_name);
+    } else {
+        const instance: T = switch (@typeInfo(T)) {
+            .Struct => std.mem.zeroInit(T, .{}),
+            .Pointer => @ptrFromInt(@alignOf(T)),
+            .Void => {},
+            else => undefined,
+        };
+
+        return if (byValue(TField)) @TypeOf(@field(instance, field_name)) else @TypeOf(&@field(instance, field_name));
     }
 }
 
 fn FieldType(comptime T: type, comptime field_name: []const u8) type {
-    if (mustache.is(.Optional)(T)) {
+    if (@typeInfo(T) == .Optional) {
         const Child = meta.Child(T);
         return FieldType(Child, field_name);
-    } else if (mustache.isSingleItemPtr(T)) {
+    } else if (stdx.isSingleItemPtr(T)) {
         const Child = meta.Child(T);
         return FieldType(Child, field_name);
     } else {
@@ -371,12 +382,10 @@ test "comptime floats" {
 }
 
 test "enum literal " {
-
-    // Skip
-    // ir_resolve_lazy_recurse. This is a bug in the Zig compiler
+    // TODO: Not sure if it's a supported use case.
     if (true) return error.SkipZigTest;
 
-    var data = .{ .value = .AreYouSure, .level = .{ .value = .Totally } };
+    const data = .{ .value = .AreYouSure, .level = .{ .value = .Totally } };
 
     const field = getField(&data, "value");
     try std.testing.expectEqual(field, data.value);
