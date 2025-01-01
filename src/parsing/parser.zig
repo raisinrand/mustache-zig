@@ -210,7 +210,7 @@ pub fn Parser(comptime options: TemplateOptions) type {
 
                 switch (current_node.text_part.part_type) {
                     .static_text => {
-                        current_node.trimStandAlone(nodes);
+                        // current_node.trimStandAlone(nodes);
                         if (current_node.text_part.isEmpty()) {
                             current_node.text_part.unRef(self.gpa);
                             _ = nodes.pop();
