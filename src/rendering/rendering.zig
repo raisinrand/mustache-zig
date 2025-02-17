@@ -840,7 +840,7 @@ pub fn RenderEngineType(
 
                     switch (element) {
                         .static_text => |content| _ = try self.write(content, .Unescaped),
-                        .interpolation => |path| try self.interpolate(path, .Escaped),
+                        .interpolation => |path| try self.interpolate(path, .Unescaped),
                         .unescaped_interpolation => |path| try self.interpolate(path, .Unescaped),
                         .section => |section| {
                             const section_children = elements[index .. index + section.children_count];
@@ -1467,6 +1467,15 @@ const tests = struct {
                 const template_text = "Hello from {Mustache}!";
                 const data = .{};
                 try expectRender(template_text, data, "Hello from {Mustache}!");
+            }
+
+            test "Sections: Empty nodes" {
+                const template_text = "{{#section}} {{node}}{{/section}}";
+                const expected = "";
+
+                const Data = struct { section: bool, node: bool };
+                const data = Data{ .section = true, .node = false };
+                try expectRender(template_text, &data, expected);
             }
 
             // Unadorned tags should interpolate content into the template.
